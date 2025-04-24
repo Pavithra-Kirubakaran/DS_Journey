@@ -440,3 +440,99 @@ plt.ylabel("Residual (Actual - Predicted Purity %)")
 plt.title("Residual Plot (Autocatalytic Model)")
 plt.grid(True, linestyle=':', alpha=0.7)
 plt.show()
+print("-" * 40)
+
+# =============================================================================
+# 9. Extrapolation and Prediction Plot (up to 3 years)
+# =============================================================================
+# (Plotting code is similar, but uses solve_reaction_model for prediction curves)
+print(f"--- Extrapolating Predictions up to {prediction_days} days ---")
+
+prediction_results_export = []
+time_pred = np.linspace(0, prediction_days, int(prediction_days / 5) + 1)
+
+unique_experiments = df_all['Experiment'].unique()
+n_exp = len(unique_experiments)
+n_cols = 2
+n_rows = (n_exp + n_cols - 1) // n_cols
+fig_preds, axes_preds = plt.subplots(n_rows, n_cols, figsize=(8 * n_cols, 6 * n_rows), squeeze=False)
+axes_preds_flat = axes_preds.flatten()
+plot_idx = 0
+grouped_all = df_all.groupby(['Experiment', 'Temperature_K'])
+unique_temps_plot = sorted(df_all['Temperature_C'].unique())
+colors = plt.cm.viridis(np.linspace(0, 1, len(unique_temps_plot)))
+temp_color_map = {temp: color for temp, color in zip(unique_temps_plot, colors)}
+
+# Use average n, m for prediction plots
+pred_n = n_avg
+pred_m = m_avg
+
+for experiment_id in unique_experiments:
+    ax = axes_preds_flat[plot_idx]
+    exp_data = df_all[df_all['Experiment'] == experiment_id]
+    grouped_exp = exp_data.groupby('Temperature_K')
+
+    for temp_k, group in grouped_exp:
+        temp_c = temp_k - 273.15
+        color = temp_color_map.get(temp_c, 'grey')
+        purity_t0 = group['Purity_t0'].iloc[0]
+        if pd.isna(purity_t0): continue
+
+        K_pred = A * np.exp(-Ea / (R * temp_k))
+        # Solve ODE for the prediction curve
+        y_pred_curve = solve_reaction_model(time_pred, K_pred, pred_n, pred_m)
+
+        if np.isnan(y_pred_curve).any():
+            print(f"Warning: ODE solve failed during plotting prediction for {experiment_id} @ {temp_c:.1f}C.")
+            continue
+
+        purity_pred_curve = (1.0 - y_pred_curve) * purity_t0
+
+        # Store prediction results for export
+        for t, y_p, p_p in zip(time_pred, y_pred_curve, purity_pred_curve):
+            prediction_results_export.append({
+                'Experiment': experiment_id, 'Temperature_C': temp_c, 'Time_days': t,
+                'Predicted_Conversion_y': y_p, 'Predicted_Purity': p_p,
+                'k_pred_day^-1': K_pred, 'n_used': pred_n, 'm_used': pred_m
+            })
+
+        # Plot experimental data (all points)
+        ax.scatter(group['Time_days'], group['Purity'], label=f'{temp_c:.0f}°C (Exp)', s=30, alpha=0.8, color=color)
+        # Plot prediction curve
+        ax.plot(time_pred, purity_pred_curve, '--', label=f'{temp_c:.0f}°C (Pred)', color=color)
+
+    # Finalize subplot
+    ax.set_xlabel("Time (days)")
+    ax.set_ylabel("Purity (%)")
+    ax.set_title(f"Experiment: {experiment_id} - Predictions (Autocatalytic)")
+    ax.axvline(x=max_training_days, color='grey', linestyle=':', label=f'Train Cutoff')
+    ax.legend(fontsize='small')
+    ax.grid(True, linestyle=':', alpha=0.7)
+    min_purity_exp = exp_data['Purity'].min() if not exp_data.empty else 0
+    max_purity_exp = exp_data['Purity_t0'].max() if not exp_data.empty else 100
+    ax.set_ylim(bottom=max(0, min_purity_exp - 10), top=max_purity_exp + 2)
+    ax.set_xlim(left=-prediction_days*0.02)
+    plot_idx += 1
+
+# Hide unused subplots
+for i in range(plot_idx, len(axes_preds_flat)): fig_preds.delaxes(axes_preds_flat[i])
+fig_preds.suptitle(f"Autocatalytic Model Predictions (Extrapolated to {prediction_days} days)", fontsize=16, y=1.02)
+fig_preds.tight_layout(rect=[0, 0, 1, 1])
+plt.show()
+
+# =============================================================================
+# 10. Save Predictions to Excel
+# =============================================================================
+if prediction_results_export:
+    df_predictions = pd.DataFrame(prediction_results_export)
+    df_predictions = df_predictions.sort_values(by=['Experiment', 'Temperature_C', 'Time_days'])
+    try:
+        df_predictions.to_excel(predictions_filename, index=False, engine='openpyxl')
+        print(f"\n--- Predictions saved to '{predictions_filename}' ---")
+    except Exception as e:
+        print(f"\nERROR: Could not save predictions to Excel file '{predictions_filename}': {e}")
+else:
+    print("\nNo predictions were generated for export.")
+
+print("-" * 40)
+print("Script finished.")
