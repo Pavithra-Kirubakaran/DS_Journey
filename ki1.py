@@ -453,10 +453,84 @@ if __name__ == '__main__':
         # Time range for extrapolation plot
         t_extrapolate_dense = np.linspace(0, EXTRAPOLATE_TO_DAY, 200)
 
-        # Plot ALL data points (including those > TRAIN_UP_TO_DAY)
+                # Plot ALL data points (including those > TRAIN_UP_TO_DAY)
         batches = data_df['batch'].unique()
         for i, batch_id in enumerate(batches):
             batch_df = data_df[data_df['batch'] == batch_id]
             marker = batch_markers[i % len(batch_markers)]
             for T_k, color in temp_color_map.items():
-                temp_batc
+                temp_batch_df = batch_df[batch_df['T_k'] == T_k]
+                if not temp_batch_df.empty:
+                     is_train = temp_batch_df['time'] <= TRAIN_UP_TO_DAY
+                     # Plot training points slightly differently? (e.g., filled vs empty)
+                     plt.scatter(temp_batch_df['time'], temp_batch_df['concentration'],
+                                 color=color, marker=marker, s=40, alpha=0.7, zorder=5,
+                                 label=f'{batch_id} Data' if T_k == unique_temps_k_all[0] and i==0 else None) # Label once per batch
+
+        # Plot fit lines based on parameters from training data, extrapolated
+        if fit_successful:
+            for j, T_k in enumerate(unique_temps_k_all):
+                T_c = T_k - 273.15
+                color = temp_color_map[T_k]
+                T_k_tensor = torch.tensor(T_k, dtype=torch.float32)
+
+                # Construct ode_params tuple dynamically for prediction
+                current_ode_params_list = []
+                if 'logA' in final_params: current_ode_params_list.append(final_params['logA'])
+                if 'logEa' in final_params: current_ode_params_list.append(final_params['logEa'])
+                if 'n' in final_params: current_ode_params_list.append(final_params['n'])
+                current_ode_params_list.append(T_k_tensor)
+                if selected_ode_func == prout_tompkins_ode_torch:
+                     current_ode_params_list.append(y0_tensor)
+                ode_params_predict = tuple(current_ode_params_list)
+
+                # Solve ODE over extrapolation range
+                t_dense_torch = torch.tensor(t_extrapolate_dense, dtype=torch.float32)
+                with torch.no_grad():
+                     y_pred_torch = solve_ode_rk4_torch(selected_ode_func, y0_tensor.clone(), t_dense_torch, ode_params=ode_params_predict)
+
+                if y_pred_torch.numel() > 0:
+                     label_n = f", n={final_params['n'].item():.2f}" if 'n' in final_params else ""
+                     plt.plot(t_extrapolate_dense, y_pred_torch.squeeze().cpu().numpy(), '--', label=f'Fit ({T_c:.0f}°C{label_n})', color=color, linewidth=2)
+                else:
+                     print(f"Skipping plot for Fit at T={T_c:.0f}°C due to solver failure.")
+        else:
+             plt.text(0.5, 0.5, 'UDE Fit Failed', horizontalalignment='center', verticalalignment='center', transform=plt.gca().transAxes, fontsize=14, color='red')
+
+
+        plt.xlabel("Time (days)", fontsize=12)
+        plt.ylabel("Purity / Concentration", fontsize=12)
+        plt.title(f"Multi-Batch Fit (UDE Model: {MODEL_CHOICE}, Trained up to {TRAIN_UP_TO_DAY}d)", fontsize=14)
+
+        # Add vertical line showing end of training data
+        plt.axvline(TRAIN_UP_TO_DAY, color='grey', linestyle=':', linewidth=1.5, label=f'Training End ({TRAIN_UP_TO_DAY}d)')
+
+        # Create custom legend handles
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+        handles, labels = plt.gca().get_legend_handles_labels()
+        # Filter unique labels for clarity
+        unique_labels_dict = {}
+        for h, l in zip(handles, labels):
+             if l not in unique_labels_dict:
+                 unique_labels_dict[l] = h
+        plt.legend(handles=unique_labels_dict.values(), labels=unique_labels_dict.keys(), bbox_to_anchor=(1.04, 1), loc='upper left', fontsize=9)
+
+        plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+        plt.ylim(bottom=0)
+        plt.xlim(left=-max(EXTRAPOLATE_TO_DAY*0.02, 5))
+        plt.tight_layout(rect=[0, 0, 0.82, 1])
+        plt.show()
+
+        # Plot UDE Training Loss
+        if ude_losses: # Only plot if training ran
+            plt.figure(figsize=(10, 6))
+            plt.plot(ude_losses, label='UDE Training Loss', color='green')
+            plt.xlabel('Epoch', fontsize=12)
+            plt.ylabel('Loss (MSE on Training Data)', fontsize=12)
+            plt.yscale('log')
+            plt.title(f'UDE Training Loss Curve ({MODEL_CHOICE} Model)', fontsize=14)
+            plt.legend(fontsize=10)
+            plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+            plt.tight_layout()
+            plt.show()
